@@ -12,130 +12,82 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-function reply(res, code, data) {
+function send(res, code, body) {
   cors(res);
-  return res.status(code).json(data);
+  return res.status(code).json(body);
 }
 
 function detect(url) {
   const u = String(url).toLowerCase();
-
   if (/youtube\.com\/|youtu\.be\//.test(u)) return "youtube";
   if (/tiktok\.com\/|vm\.tiktok\.com|vt\.tiktok\.com/.test(u)) return "tiktok";
   if (/instagram\.com\/(p|reel|reels|tv)\//.test(u)) return "instagram";
   if (/facebook\.com\/|fb\.watch\//.test(u)) return "facebook";
   if (/open\.spotify\.com\/|spotify\.link\//.test(u)) return "spotify";
-
   return null;
 }
 
 function getBody(req) {
   if (req.method === "GET") return req.query || {};
-
   if (!req.body) return {};
-
   if (typeof req.body === "object") return req.body;
-
-  try {
-    return JSON.parse(req.body);
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(req.body); } catch { return {}; }
 }
 
-function usable(data) {
-  if (data == null) return false;
-  if (data.status === false || data.success === false) return false;
-
-  // Do not accept a useless bare { status: true } response.
-  if (
-    data.status === true &&
-    Object.keys(data).length <= 2 &&
-    !data.url &&
-    !data.data &&
-    !data.result &&
-    !data.results &&
-    !data.download
-  ) {
-    return false;
-  }
-
+function usable(x) {
+  if (x == null || x.status === false || x.success === false) return false;
+  if (x.status === true && Object.keys(x).length <= 2 &&
+      !x.url && !x.data && !x.result && !x.results && !x.download) return false;
   return true;
 }
 
-async function loadProvider() {
-  const mod = await import("btch-downloader");
-
-  // Handles both CommonJS and ESM package export shapes.
-  if (mod.default && typeof mod.default === "object") {
-    return { ...mod.default, ...mod };
-  }
-
-  return mod;
-}
-
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   cors(res);
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  if (req.method !== "GET" && req.method !== "POST") {
-    return reply(res, 405, {
-      status: false,
-      error: "Method not allowed"
-    });
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (!["GET", "POST"].includes(req.method))
+    return send(res, 405, { status: false, error: "Method not allowed" });
 
   try {
     const body = getBody(req);
     const url = String(body.url || "").trim();
-
-    if (!url) {
-      return reply(res, 400, {
-        status: false,
-        error: "url is required"
-      });
-    }
+    if (!url) return send(res, 400, { status: false, error: "url is required" });
 
     const detected = detect(url);
     const requested = String(body.platform || "auto").toLowerCase();
     const platform = requested === "auto" ? detected : requested;
 
     if (!platform || !PROVIDERS[platform]) {
-      return reply(res, 400, {
+      return send(res, 400, {
         status: false,
         error: "Unsupported URL or platform",
         supported: Object.keys(PROVIDERS)
       });
     }
 
-    if (requested !== "auto" && detected && detected !== platform) {
-      return reply(res, 400, {
+    if (requested !== "auto" && detected && requested !== detected) {
+      return send(res, 400, {
         status: false,
-        error: `URL belongs to ${detected}, not ${platform}`
+        error: `URL belongs to ${detected}, not ${requested}`
       });
     }
 
     let provider;
-
     try {
-      provider = await loadProvider();
-    } catch (err) {
-      console.error("[provider-load]", err);
-      return reply(res, 500, {
+      provider = await import("btch-downloader");
+    } catch (e) {
+      console.error("[provider-load]", e);
+      return send(res, 500, {
         status: false,
         error: "Downloader package failed to load",
-        detail: err?.message || String(err)
+        detail: e?.message || String(e)
       });
     }
 
     const fnName = PROVIDERS[platform];
-    const fn = provider[fnName];
+    const fn = provider[fnName] || provider.default?.[fnName];
 
     if (typeof fn !== "function") {
-      return reply(res, 500, {
+      return send(res, 500, {
         status: false,
         platform,
         error: `Provider function '${fnName}' is unavailable`
@@ -143,20 +95,19 @@ module.exports = async function handler(req, res) {
     }
 
     let result;
-
     try {
       result = await fn(url);
-    } catch (err) {
-      console.error(`[provider:${platform}]`, err);
-      return reply(res, 502, {
+    } catch (e) {
+      console.error(`[provider:${platform}]`, e);
+      return send(res, 502, {
         status: false,
         platform,
-        error: err?.message || "Provider request failed"
+        error: e?.message || "Provider request failed"
       });
     }
 
     if (!usable(result)) {
-      return reply(res, 502, {
+      return send(res, 502, {
         status: false,
         platform,
         error: "Provider returned no usable result",
@@ -164,17 +115,12 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    return reply(res, 200, {
-      status: true,
-      platform,
-      data: result
-    });
-  } catch (err) {
-    console.error("[handler]", err);
-
-    return reply(res, 500, {
+    return send(res, 200, { status: true, platform, data: result });
+  } catch (e) {
+    console.error("[handler]", e);
+    return send(res, 500, {
       status: false,
-      error: err?.message || "Internal server error"
+      error: e?.message || "Internal server error"
     });
   }
-};
+}

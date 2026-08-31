@@ -1,9 +1,9 @@
-module.exports = (req, res) => {
+export default function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).json({
     status: true,
     service: "universal-downloader",
-    runtime: process.version,
-    time: new Date().toISOString()
+    version: "7.0.0",
+    runtime: process.version
   });
-};
+}
