@@ -8,6 +8,7 @@ const PROVIDERS = {
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -34,23 +35,73 @@ function getBody(req) {
   try { return JSON.parse(req.body); } catch { return {}; }
 }
 
-function usable(x) {
-  if (x == null || x.status === false || x.success === false) return false;
-  if (x.status === true && Object.keys(x).length <= 2 &&
-      !x.url && !x.data && !x.result && !x.results && !x.download) return false;
-  return true;
+/*
+ * Important fix:
+ * Some providers return objects containing extra properties whose values
+ * are undefined. Object.keys() therefore cannot be used to decide whether
+ * media exists. We explicitly search for real HTTP media URLs instead.
+ */
+function findMedia(value, depth = 0) {
+  if (depth > 8 || value == null) return false;
+
+  if (typeof value === "string") {
+    return /^https?:\/\/\S+/i.test(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(v => findMedia(v, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    return Object.entries(value).some(([key, val]) => {
+      if (typeof val === "string" && /^https?:\/\/\S+/i.test(val)) {
+        const k = key.toLowerCase();
+        return /url|download|link|source|video|audio|media/.test(k) || true;
+      }
+      return findMedia(val, depth + 1);
+    });
+  }
+
+  return false;
+}
+
+function providerSucceeded(result) {
+  if (!result || result.status === false || result.success === false) {
+    return false;
+  }
+
+  return findMedia(result);
+}
+
+async function loadProvider() {
+  const mod = await import("btch-downloader");
+  return mod;
 }
 
 export default async function handler(req, res) {
   cors(res);
+
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (!["GET", "POST"].includes(req.method))
-    return send(res, 405, { status: false, error: "Method not allowed" });
+
+  if (!["GET", "POST"].includes(req.method)) {
+    return send(res, 405, {
+      status: false,
+      error: "Method not allowed",
+      version: "8.0.0"
+    });
+  }
 
   try {
     const body = getBody(req);
     const url = String(body.url || "").trim();
-    if (!url) return send(res, 400, { status: false, error: "url is required" });
+
+    if (!url) {
+      return send(res, 400, {
+        status: false,
+        error: "url is required",
+        version: "8.0.0"
+      });
+    }
 
     const detected = detect(url);
     const requested = String(body.platform || "auto").toLowerCase();
@@ -60,26 +111,21 @@ export default async function handler(req, res) {
       return send(res, 400, {
         status: false,
         error: "Unsupported URL or platform",
-        supported: Object.keys(PROVIDERS)
-      });
-    }
-
-    if (requested !== "auto" && detected && requested !== detected) {
-      return send(res, 400, {
-        status: false,
-        error: `URL belongs to ${detected}, not ${requested}`
+        supported: Object.keys(PROVIDERS),
+        version: "8.0.0"
       });
     }
 
     let provider;
     try {
-      provider = await import("btch-downloader");
+      provider = await loadProvider();
     } catch (e) {
       console.error("[provider-load]", e);
       return send(res, 500, {
         status: false,
         error: "Downloader package failed to load",
-        detail: e?.message || String(e)
+        detail: e?.message || String(e),
+        version: "8.0.0"
       });
     }
 
@@ -90,7 +136,8 @@ export default async function handler(req, res) {
       return send(res, 500, {
         status: false,
         platform,
-        error: `Provider function '${fnName}' is unavailable`
+        error: `Provider function '${fnName}' is unavailable`,
+        version: "8.0.0"
       });
     }
 
@@ -102,25 +149,33 @@ export default async function handler(req, res) {
       return send(res, 502, {
         status: false,
         platform,
-        error: e?.message || "Provider request failed"
+        error: e?.message || "Provider request failed",
+        version: "8.0.0"
       });
     }
 
-    if (!usable(result)) {
+    if (!providerSucceeded(result)) {
       return send(res, 502, {
         status: false,
         platform,
-        error: "Provider returned no usable result",
-        provider: result
+        error: "Provider returned no media URL",
+        provider: result,
+        version: "8.0.0"
       });
     }
 
-    return send(res, 200, { status: true, platform, data: result });
+    return send(res, 200, {
+      status: true,
+      platform,
+      data: result,
+      version: "8.0.0"
+    });
   } catch (e) {
     console.error("[handler]", e);
     return send(res, 500, {
       status: false,
-      error: e?.message || "Internal server error"
+      error: e?.message || "Internal server error",
+      version: "8.0.0"
     });
   }
 }
