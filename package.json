@@ -1,0 +1,12 @@
+{
+  "name": "universal-downloader-vercel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "btch-downloader": "6.3.6"
+  }
+}
