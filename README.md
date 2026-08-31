@@ -1,19 +1,29 @@
-# Universal Downloader V7
+# Universal Downloader V8
 
-The API is consistently ESM. package.json uses type=module and both API
-functions use export default.
+V8 fixes the response validation bug from V7.
 
-Replace the repository contents and create a NEW Vercel deployment.
+Some provider objects can contain extra properties with `undefined` values.
+`Object.keys()` counts those properties even though JSON.stringify() omits
+them. That made a provider response like:
 
-Test first:
+{ developer: "BOTCAHX", status: true }
+
+look successful to the old validator.
+
+V8 instead recursively checks for a real HTTP media URL before returning
+status:true.
+
+It also sends Cache-Control: no-store so API responses are not reused as
+cached data during testing.
+
+First test:
 GET /api/health
 
-Expected:
-{"status":true,"service":"universal-downloader","version":"7.0.0","runtime":"v20.x"}
+Expected version:
+8.0.0
 
 Then:
 GET /api/download?url=https%3A%2F%2Fyoutu.be%2FPDU31zRp7Ng
 
-Supported: youtube, tiktok, instagram, facebook, spotify.
-
-Vercel automatically installs package.json.
+If the upstream YouTube provider returns only metadata/status and no media
+URL, V8 returns HTTP 502 instead of falsely reporting success.
