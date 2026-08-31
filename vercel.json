@@ -3,6 +3,9 @@
   "functions": {
     "api/download.js": {
       "maxDuration": 60
+    },
+    "api/health.js": {
+      "maxDuration": 10
     }
   }
 }
