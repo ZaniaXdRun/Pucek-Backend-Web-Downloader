@@ -1,11 +1,15 @@
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type"
+const PROVIDERS = {
+  youtube: "youtube",
+  tiktok: "ttdl",
+  instagram: "igdl",
+  facebook: "fbdown",
+  spotify: "spotify"
 };
 
 function cors(res) {
-  for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v);
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
 function reply(res, code, data) {
@@ -25,11 +29,25 @@ function detect(url) {
   return null;
 }
 
-function providerOk(data) {
+function getBody(req) {
+  if (req.method === "GET") return req.query || {};
+
+  if (!req.body) return {};
+
+  if (typeof req.body === "object") return req.body;
+
+  try {
+    return JSON.parse(req.body);
+  } catch {
+    return {};
+  }
+}
+
+function usable(data) {
   if (data == null) return false;
   if (data.status === false || data.success === false) return false;
 
-  // A bare {status:true} is not an extracted result.
+  // Do not accept a useless bare { status: true } response.
   if (
     data.status === true &&
     Object.keys(data).length <= 2 &&
@@ -45,26 +63,23 @@ function providerOk(data) {
   return true;
 }
 
-function getBody(req) {
-  if (req.method === "GET") return req.query || {};
+async function loadProvider() {
+  const mod = await import("btch-downloader");
 
-  if (!req.body) return {};
-
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
+  // Handles both CommonJS and ESM package export shapes.
+  if (mod.default && typeof mod.default === "object") {
+    return { ...mod.default, ...mod };
   }
 
-  return req.body;
+  return mod;
 }
 
 module.exports = async function handler(req, res) {
   cors(res);
 
-  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
   if (req.method !== "GET" && req.method !== "POST") {
     return reply(res, 405, {
@@ -88,19 +103,11 @@ module.exports = async function handler(req, res) {
     const requested = String(body.platform || "auto").toLowerCase();
     const platform = requested === "auto" ? detected : requested;
 
-    const supported = [
-      "youtube",
-      "tiktok",
-      "instagram",
-      "facebook",
-      "spotify"
-    ];
-
-    if (!platform || !supported.includes(platform)) {
+    if (!platform || !PROVIDERS[platform]) {
       return reply(res, 400, {
         status: false,
         error: "Unsupported URL or platform",
-        supported
+        supported: Object.keys(PROVIDERS)
       });
     }
 
@@ -111,30 +118,44 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Load the provider only when this endpoint is actually invoked.
-    const btch = require("btch-downloader");
+    let provider;
 
-    const fnMap = {
-      youtube: "youtube",
-      tiktok: "ttdl",
-      instagram: "igdl",
-      facebook: "fbdown",
-      spotify: "spotify"
-    };
+    try {
+      provider = await loadProvider();
+    } catch (err) {
+      console.error("[provider-load]", err);
+      return reply(res, 500, {
+        status: false,
+        error: "Downloader package failed to load",
+        detail: err?.message || String(err)
+      });
+    }
 
-    const fn = btch[fnMap[platform]];
+    const fnName = PROVIDERS[platform];
+    const fn = provider[fnName];
 
     if (typeof fn !== "function") {
       return reply(res, 500, {
         status: false,
         platform,
-        error: `Provider function ${fnMap[platform]} is unavailable`
+        error: `Provider function '${fnName}' is unavailable`
       });
     }
 
-    const result = await fn(url);
+    let result;
 
-    if (!providerOk(result)) {
+    try {
+      result = await fn(url);
+    } catch (err) {
+      console.error(`[provider:${platform}]`, err);
+      return reply(res, 502, {
+        status: false,
+        platform,
+        error: err?.message || "Provider request failed"
+      });
+    }
+
+    if (!usable(result)) {
       return reply(res, 502, {
         status: false,
         platform,
@@ -149,11 +170,11 @@ module.exports = async function handler(req, res) {
       data: result
     });
   } catch (err) {
-    console.error("[download]", err);
+    console.error("[handler]", err);
 
-    return reply(res, 502, {
+    return reply(res, 500, {
       status: false,
-      error: err?.message || "Downloader provider failed"
+      error: err?.message || "Internal server error"
     });
   }
 };
