@@ -1,34 +1,20 @@
-import {
-  youtube as abYoutube,
-  ttdl,
-  tiktok,
-  igdl,
-  spotify as abSpotify
-} from "ab-downloader";
-import ytdl from "@distube/ytdl-core";
-import Facebook from "facebook-dl";
-
-const fb = new Facebook();
-
-const CORS = {
+const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type"
 };
 
-function setCors(res) {
-  for (const [key, value] of Object.entries(CORS)) {
-    res.setHeader(key, value);
-  }
+function headers(res) {
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
 }
 
-function send(res, status, payload) {
-  setCors(res);
-  return res.status(status).json(payload);
+function send(res, code, data) {
+  headers(res);
+  return res.status(code).json(data);
 }
 
-function detectPlatform(url) {
-  const u = String(url).toLowerCase().trim();
+function detect(url) {
+  const u = String(url).toLowerCase();
 
   if (/open\.spotify\.com\/|spotify\.link\//.test(u)) return "spotify";
   if (/instagram\.com\/(p|reel|reels|tv)\//.test(u)) return "instagram";
@@ -39,51 +25,43 @@ function detectPlatform(url) {
   return null;
 }
 
-function looksSuccessful(value) {
-  if (!value) return false;
+function validResult(value) {
+  if (value == null) return false;
+  if (value.status === false || value.success === false) return false;
 
-  if (value.status === false) return false;
-  if (value.success === false) return false;
-
-  const stack = [value];
-  let foundMedia = false;
-
-  while (stack.length) {
-    const current = stack.pop();
-
-    if (!current) continue;
-
-    if (typeof current === "string") {
-      if (/^https?:\/\//i.test(current)) foundMedia = true;
-      continue;
-    }
-
-    if (Array.isArray(current)) {
-      for (const item of current) stack.push(item);
-      continue;
-    }
-
-    if (typeof current === "object") {
-      for (const [key, val] of Object.entries(current)) {
-        const k = key.toLowerCase();
-
-        if (
-          typeof val === "string" &&
-          /^https?:\/\//i.test(val) &&
-          /(url|download|video|audio|link|source)/.test(k)
-        ) {
-          foundMedia = true;
-        }
-
-        if (val && typeof val === "object") stack.push(val);
-      }
-    }
+  // Provider responses such as { status: true } are not useful by themselves.
+  if (
+    value.status === true &&
+    Object.keys(value).length <= 2 &&
+    !value.url &&
+    !value.data &&
+    !value.result &&
+    !value.results
+  ) {
+    return false;
   }
 
-  return foundMedia || value.status === true;
+  return true;
 }
 
-async function youtubeFallback(url) {
+async function loadAb() {
+  // Lazy loading prevents an unused provider from crashing the function
+  // during cold start.
+  return await import("ab-downloader");
+}
+
+async function youtube(url) {
+  try {
+    const ab = await loadAb();
+    if (typeof ab.youtube === "function") {
+      const result = await ab.youtube(url);
+      if (validResult(result)) return result;
+    }
+  } catch (e) {
+    console.error("[youtube/ab]", e.message);
+  }
+
+  const ytdl = require("@distube/ytdl-core");
   const info = await ytdl.getInfo(url);
   const d = info.videoDetails;
 
@@ -117,83 +95,63 @@ async function youtubeFallback(url) {
     title: d.title,
     author: d.author?.name || null,
     duration: d.lengthSeconds,
-    thumbnail:
-      d.thumbnails?.at(-1)?.url ||
+    thumbnail: d.thumbnails?.at(-1)?.url ||
       `https://i.ytimg.com/vi/${d.videoId}/hqdefault.jpg`,
     formats,
     audio
   };
 }
 
-async function runPlatform(platform, url) {
-  switch (platform) {
-    case "youtube": {
-      try {
-        const result = await abYoutube(url);
-        if (looksSuccessful(result)) return result;
-      } catch (err) {
-        console.warn("[youtube] ab-downloader failed:", err?.message);
-      }
+async function universal(platform, url) {
+  const ab = await loadAb();
 
-      // Fallback to direct format extraction when the universal package
-      // returns only {status:true} or an upstream error.
-      return await youtubeFallback(url);
-    }
+  const map = {
+    tiktok: "ttdl",
+    instagram: "igdl",
+    facebook: "fbdown",
+    spotify: "spotify"
+  };
 
-    case "tiktok": {
-      try {
-        const result = await ttdl(url);
-        if (looksSuccessful(result)) return result;
-      } catch (err) {
-        console.warn("[tiktok] ttdl failed:", err?.message);
-      }
+  const fnName = map[platform];
+  const fn = ab[fnName];
 
-      const result = await tiktok(url);
-      if (!looksSuccessful(result)) {
-        throw new Error("TikTok provider returned no media URL.");
-      }
-      return result;
-    }
-
-    case "instagram": {
-      const result = await igdl(url);
-      if (!looksSuccessful(result)) {
-        throw new Error("Instagram provider returned no media URL.");
-      }
-      return result;
-    }
-
-    case "facebook": {
-      const result = await fb.fbdl(url);
-      if (!result || result.code !== 200 || !looksSuccessful(result.results)) {
-        throw new Error(
-          result?.results?.message ||
-          result?.message ||
-          "Facebook provider returned no media URL."
-        );
-      }
-      return result.results;
-    }
-
-    case "spotify": {
-      const result = await abSpotify(url);
-      if (!looksSuccessful(result)) {
-        throw new Error("Spotify provider returned no usable result.");
-      }
-      return result;
-    }
-
-    default:
-      throw new Error("Unsupported platform");
+  if (typeof fn !== "function") {
+    throw new Error(`Provider function ${fnName} is unavailable.`);
   }
+
+  const result = await fn(url);
+
+  if (!validResult(result)) {
+    throw new Error(
+      `${platform} provider returned an unusable response.`
+    );
+  }
+
+  return result;
 }
 
-export default async function handler(req, res) {
-  setCors(res);
+async function facebookFallback(url) {
+  const Facebook = require("facebook-dl");
+  const api = new Facebook();
+  const result = await api.fbdl(url);
+
+  if (!result || result.code !== 200 || !result.results) {
+    throw new Error(
+      result?.results?.message ||
+      result?.message ||
+      "Facebook provider returned no result."
+    );
+  }
+
+  return result.results;
+}
+
+module.exports = async function handler(req, res) {
+  headers(res);
 
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  if (!["GET", "POST"].includes(req.method)) {
+  if (req.method !== "GET" && req.method !== "POST") {
     return send(res, 405, {
       status: false,
       error: "Method not allowed"
@@ -201,15 +159,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    const body =
-      req.method === "GET"
-        ? req.query || {}
-        : typeof req.body === "string"
+    let body;
+
+    if (req.method === "GET") {
+      body = req.query || {};
+    } else {
+      body =
+        typeof req.body === "string"
           ? JSON.parse(req.body || "{}")
           : req.body || {};
+    }
 
     const url = String(body.url || "").trim();
-    const requested = String(body.platform || "auto").toLowerCase();
 
     if (!url) {
       return send(res, 400, {
@@ -218,21 +179,23 @@ export default async function handler(req, res) {
       });
     }
 
-    const detected = detectPlatform(url);
+    const requested = String(body.platform || "auto").toLowerCase();
+    const detected = detect(url);
     const platform = requested === "auto" ? detected : requested;
 
-    if (!platform) {
-      return send(res, 400, {
-        status: false,
-        error: "Unsupported URL",
-        supported: ["youtube", "tiktok", "instagram", "facebook", "spotify"]
-      });
-    }
+    const supported = [
+      "youtube",
+      "tiktok",
+      "instagram",
+      "facebook",
+      "spotify"
+    ];
 
-    if (!["youtube", "tiktok", "instagram", "facebook", "spotify"].includes(platform)) {
+    if (!platform || !supported.includes(platform)) {
       return send(res, 400, {
         status: false,
-        error: "Unsupported platform"
+        error: "Unsupported URL or platform",
+        supported
       });
     }
 
@@ -243,13 +206,27 @@ export default async function handler(req, res) {
       });
     }
 
-    const data = await runPlatform(platform, url);
+    let data;
 
-    if (!looksSuccessful(data)) {
+    if (platform === "youtube") {
+      data = await youtube(url);
+    } else {
+      try {
+        data = await universal(platform, url);
+      } catch (e) {
+        if (platform === "facebook") {
+          data = await facebookFallback(url);
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    if (!validResult(data)) {
       return send(res, 502, {
         status: false,
         platform,
-        error: "Provider returned an unusable response."
+        error: "Provider returned no usable result."
       });
     }
 
@@ -258,12 +235,12 @@ export default async function handler(req, res) {
       platform,
       data
     });
-  } catch (err) {
-    console.error("[download]", err);
+  } catch (e) {
+    console.error("[download]", e);
 
     return send(res, 502, {
       status: false,
-      error: err?.message || "Downloader provider failed"
+      error: e?.message || "Downloader provider failed"
     });
   }
-}
+};
