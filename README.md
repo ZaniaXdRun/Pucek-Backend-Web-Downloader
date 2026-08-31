@@ -1,60 +1,19 @@
-# Universal Downloader Backend for Vercel
+# Universal Downloader V7
 
-This backend uses the `btch-downloader` npm package instead of implementing
-individual site scrapers in the project.
+The API is consistently ESM. package.json uses type=module and both API
+functions use export default.
 
-Supported adapters included here:
-- YouTube
-- TikTok
-- Instagram
-- Facebook
-- Spotify
+Replace the repository contents and create a NEW Vercel deployment.
 
-## Deploy
+Test first:
+GET /api/health
 
-1. Upload this folder to GitHub.
-2. Import the repository into Vercel.
-3. Deploy with Node.js 20+.
-4. Endpoint:
+Expected:
+{"status":true,"service":"universal-downloader","version":"7.0.0","runtime":"v20.x"}
 
-POST https://YOUR-DOMAIN.vercel.app/api/download
+Then:
+GET /api/download?url=https%3A%2F%2Fyoutu.be%2FPDU31zRp7Ng
 
-JSON body:
+Supported: youtube, tiktok, instagram, facebook, spotify.
 
-{
-  "url": "https://www.youtube.com/watch?v=..."
-}
-
-Optional platform:
-
-{
-  "url": "https://...",
-  "platform": "youtube"
-}
-
-`platform` can be:
-youtube, tiktok, instagram, facebook, spotify
-
-GET is also supported:
-
-/api/download?url=https://...
-
-The backend returns the package response under `data`.
-
-## Frontend example
-
-```js
-const r = await fetch("https://YOUR-DOMAIN.vercel.app/api/download", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ url })
-});
-
-const result = await r.json();
-console.log(result);
-```
-
-Notes:
-- The npm package currently documents Node.js v20+.
-- Returned media URLs may expire and should not be treated as permanent storage URLs.
-- The package itself handles the upstream provider logic; this API only dispatches and normalizes requests.
+Vercel automatically installs package.json.
